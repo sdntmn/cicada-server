@@ -1,11 +1,10 @@
 {
   "name": "cicada-server",
   "version": "1.0.0",
-  "main": "index.js",
+  "main": "index.ts",
   "license": "MIT",
   "scripts": {
-    "start": "node ./index.js",
-    "deploy": "vercel --prod"
+    "start": "node ./index.ts"
   },
   "dependencies": {
     "cors": "^2.8.5",
