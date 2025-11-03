@@ -17,6 +17,6 @@ server.use(router);
 // Порт из переменной окружения (Render задаёт его автоматически)
 const PORT = process.env.PORT || 8080;
 
-server.listen(PORT, () => {
-  console.log(`✅ JSON Server running on port ${PORT}`);
+server.listen(PORT, "0.0.0.0", () => {
+  console.log(`✅ Running on port ${PORT}`);
 });
