@@ -50,6 +50,33 @@ app.get("/users", async (req, res) => {
   res.json(data);
 });
 
+// Эндпоинт: получить пользователя по ID
+app.get("/users/:id", async (req, res) => {
+  const { id } = req.params;
+
+  // Валидация ID (опционально, но рекомендуется)
+  if (!id || id.trim() === "") {
+    return res.status(400).json({ error: "User ID is required" });
+  }
+
+  const { data, error } = await supabase
+    .from("users")
+    .select("*")
+    .eq("id", id)
+    .single(); // .single() ожидает ровно одну запись
+
+  if (error) {
+    // Ошибка "не найдено" в Supabase имеет код 'PGRST116'
+    if (error.code === "PGRST116") {
+      return res.status(404).json({ error: "User not found" });
+    }
+    // Любая другая ошибка
+    return res.status(500).json({ error: error.message });
+  }
+
+  res.json(data);
+});
+
 app.get("/houses", async (req, res) => {
   const { data, error } = await supabase.from("houses").select("*");
   if (error) return res.status(500).json({ error: error.message });
