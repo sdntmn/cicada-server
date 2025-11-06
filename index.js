@@ -43,6 +43,50 @@ app.get("/accounts/:id", async (req, res) => {
   res.json(data);
 });
 
+// Эндпоинт: поиск аккаунтов по домам, долгу и сроку
+app.post("/search-accounts", async (req, res) => {
+  const { houseIds, minDebt, minTerm } = req.body;
+
+  if (!Array.isArray(houseIds) || houseIds.length === 0) {
+    return res
+      .status(400)
+      .json({ error: "houseIds must be a non-empty array" });
+  }
+  if (typeof minDebt !== "number" || minDebt < 0) {
+    return res
+      .status(400)
+      .json({ error: "minDebt must be a non-negative number" });
+  }
+  if (
+    typeof minTerm !== "number" ||
+    minTerm < 0 ||
+    !Number.isInteger(minTerm)
+  ) {
+    return res
+      .status(400)
+      .json({ error: "minTerm must be a non-negative integer" });
+  }
+
+  try {
+    const { data, error } = await supabase
+      .from("accounts")
+      .select("*")
+      .in("house_id", houseIds) // ✅ Исправлено: колонка, а не JSONB
+      .gte("debt", minDebt)
+      .gte("debt_term_months", minTerm);
+
+    if (error) {
+      console.error("Supabase error:", error);
+      return res.status(500).json({ error: error.message });
+    }
+
+    res.json(data);
+  } catch (err) {
+    console.error("Unexpected error:", err);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
 // Аналогично для users, houses и т.д.
 app.get("/users", async (req, res) => {
   const { data, error } = await supabase.from("users").select("*");
