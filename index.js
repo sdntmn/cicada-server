@@ -58,6 +58,15 @@ app.post("/search-accounts", async (req, res) => {
     query = query.in("house_id", houseIds);
   }
 
+  if (minDebt !== undefined && minDebt >= 0) {
+    query = query.gte("debt", minDebt);
+  }
+
+  // Фильтр по сроку — только если minTerm задан
+  if (minTerm !== undefined && minTerm >= 0) {
+    query = query.gte("debt_term_months", minTerm);
+  }
+
   // Фильтр по домам (опционально)
   if (Array.isArray(houseIds) && houseIds.length > 0) {
     query = query.in("house_id", houseIds);
