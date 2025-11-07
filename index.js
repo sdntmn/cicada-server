@@ -43,66 +43,89 @@ app.get("/accounts/:id", async (req, res) => {
   res.json(data);
 });
 
-// index.js
 app.post("/search-accounts", async (req, res) => {
-  const { houseIds, minDebt, minTerm, filterMode = "all" } = req.body;
+  const {
+    houseIds,
+    minDebt,
+    minTerm,
+    filterMode = "all",
+    page = 0,
+    pageSize = 20,
+  } = req.body;
 
   // Валидация filterMode
   if (filterMode !== "all" && filterMode !== "any") {
     return res.status(400).json({ error: "filterMode must be 'all' or 'any'" });
   }
 
-  let query = supabase.from("accounts").select("*");
+  // Валидация pageSize
+  const size = Math.min(Math.max(pageSize, 1), 100);
+  const from = page * size;
+  const to = from + size - 1;
 
-  if (houseIds && houseIds.length > 0) {
-    query = query.in("house_id", houseIds);
-  }
-
-  if (minDebt !== undefined && minDebt >= 0) {
-    query = query.gte("debt", minDebt);
-  }
-
-  // Фильтр по сроку — только если minTerm задан
-  if (minTerm !== undefined && minTerm >= 0) {
-    query = query.gte("debt_term_months", minTerm);
-  }
-
-  // Фильтр по домам (опционально)
-  if (Array.isArray(houseIds) && houseIds.length > 0) {
-    query = query.in("house_id", houseIds);
-  }
-
-  // Условия по долгу и сроку
-  const hasDebt = typeof minDebt === "number" && minDebt >= 0;
+  // Условия фильтрации
+  const hasHouseIds = Array.isArray(houseIds) && houseIds.length > 0;
+  const hasDebt = typeof minDebt === "number" && minDebt > 0;
   const hasTerm =
-    typeof minTerm === "number" && minTerm >= 0 && Number.isInteger(minTerm);
-
-  if (filterMode === "all") {
-    // Логика "И"
-    if (hasDebt) query = query.gte("debt", minDebt);
-    if (hasTerm) query = query.gte("debt_term_months", minTerm);
-  } else if (filterMode === "any") {
-    // Логика "ИЛИ" → используем RPC
-    const { data, error } = await supabase.rpc("search_accounts_or", {
-      p_house_ids: houseIds && houseIds.length > 0 ? houseIds : null,
-      p_min_debt: hasDebt ? minDebt : null,
-      p_min_term: hasTerm ? minTerm : null,
-    });
-
-    if (error) {
-      console.error("RPC error:", error);
-      return res.status(500).json({ error: error.message });
-    }
-    return res.json(data);
-  }
+    typeof minTerm === "number" && minTerm > 0 && Number.isInteger(minTerm);
 
   try {
-    const { data, error } = await query;
+    if (filterMode === "any") {
+      // Режим "ИЛИ" — используем RPC
+      const { data, error } = await supabase.rpc("search_accounts_or", {
+        p_house_ids: hasHouseIds ? houseIds : null,
+        p_min_debt: hasDebt ? minDebt : null,
+        p_min_term: hasTerm ? minTerm : null,
+        p_limit: size,
+        p_offset: from,
+      });
+
+      if (error) {
+        console.error("RPC error:", error);
+        return res.status(500).json({ error: error.message });
+      }
+
+      // RPC должен возвращать { data, total }
+      const total = data?.[0]?.total_count ?? data.length; // зависит от реализации RPC
+      const result = Array.isArray(data) ? data : [];
+
+      return res.json({
+        data: result,
+        total,
+        page,
+        pageSize: size,
+      });
+    }
+
+    // Режим "И" — стандартный REST запрос
+    let query = supabase.from("accounts").select("*", { count: "exact" });
+
+    if (hasHouseIds) {
+      query = query.in("house_id", houseIds);
+    }
+    if (hasDebt) {
+      query = query.gte("debt", minDebt);
+    }
+    if (hasTerm) {
+      query = query.gte("debt_term_months", minTerm);
+    }
+
+    // Пагинация
+    query = query.range(from, to);
+
+    const { data, error, count } = await query;
+
     if (error) {
       console.error("Supabase error:", error);
       return res.status(500).json({ error: error.message });
     }
-    res.json(data);
+
+    res.json({
+      data,
+      total: count,
+      page,
+      pageSize: size,
+    });
   } catch (err) {
     console.error("Unexpected error:", err);
     res.status(500).json({ error: "Internal server error" });
