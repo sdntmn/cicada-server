@@ -54,6 +54,10 @@ app.post("/search-accounts", async (req, res) => {
 
   let query = supabase.from("accounts").select("*");
 
+  if (houseIds && houseIds.length > 0) {
+    query = query.in("house_id", houseIds);
+  }
+
   // Фильтр по домам (опционально)
   if (Array.isArray(houseIds) && houseIds.length > 0) {
     query = query.in("house_id", houseIds);
