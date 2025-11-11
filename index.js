@@ -70,18 +70,14 @@ app.post("/debts/candidates", async (req, res) => {
 
   const size = Math.min(Math.max(parseInt(pageSize, 10) || 20, 1), 100);
   const from = page * size;
-  const to = from + size - 1;
 
   try {
-    // 1. Получаем все долги со статусом 'new'
+    // === 1. Получаем долги со статусом 'candidates' с фильтрацией по сумме/сроку ===
     let debtQuery = supabase
       .from("debt")
-      .select("account_id, amount, penalty, debt_term_months, stage", {
-        count: "exact",
-      })
+      .select("account_id, amount, penalty, debt_term_months, stage")
       .eq("stage", "candidates");
 
-    // Применяем фильтры по долгу
     if (typeof minDebt === "number" && minDebt > 0) {
       debtQuery = debtQuery.gte("amount", minDebt);
     }
@@ -93,58 +89,71 @@ app.post("/debts/candidates", async (req, res) => {
       debtQuery = debtQuery.gte("debt_term_months", minTerm);
     }
 
-    const { data: debts, error: debtError } = await debtQuery;
+    const { debts, error: debtError } = await debtQuery;
     if (debtError) {
       console.error("Debt query error:", debtError);
       return res.status(500).json({ error: debtError.message });
     }
 
     const debtMap = {};
-    const accountIdsFromDebt = [];
-    for (const d of debts) {
+    const accountIdsFromDebt = debts.map((d) => {
       debtMap[d.account_id] = d;
-      accountIdsFromDebt.push(d.account_id);
+      return d.account_id;
+    });
+
+    if (accountIdsFromDebt.length === 0 && filterMode === "all") {
+      return res.json({ data: [], total: 0, page, pageSize: size });
     }
 
-    // 2. Получаем аккаунты
-    let accountQuery = supabase.from("accounts").select("*");
+    // === 2. Формируем базовый запрос к accounts с фильтрами ===
+    let baseAccountQuery = supabase.from("accounts").select("*");
 
-    // Фильтр по дому — применяется к accounts
     if (Array.isArray(houseIds) && houseIds.length > 0) {
-      accountQuery = accountQuery.in("house_id", houseIds);
+      baseAccountQuery = baseAccountQuery.in("house_id", houseIds);
     }
 
-    // Если в режиме "all", то аккаунты должны быть в списке accountIdsFromDebt
     if (filterMode === "all") {
-      if (accountIdsFromDebt.length === 0) {
-        // Нет долгов → пустой результат
-        return res.json({ data: [], total: 0, page, pageSize: size });
-      }
-      accountQuery = accountQuery.in("id", accountIdsFromDebt);
+      baseAccountQuery = baseAccountQuery.in("id", accountIdsFromDebt);
     }
 
-    // Пагинация
-    accountQuery = accountQuery.range(from, to);
-    const { data: accounts, error: accountError, count } = await accountQuery;
+    // === 3. Запрос для общего количества (total) ===
+    const countQuery = supabase
+      .from("accounts")
+      .select("*", { count: "exact" })
+      .in("id", accountIdsFromDebt);
 
+    if (Array.isArray(houseIds) && houseIds.length > 0) {
+      countQuery.in("house_id", houseIds);
+    }
+
+    const { count, error: countError } = await countQuery;
+    if (countError) {
+      console.error("Count query error:", countError);
+      return res.status(500).json({ error: countError.message });
+    }
+
+    // === 4. Запрос для данных текущей страницы ===
+    const { accounts, error: accountError } = await baseAccountQuery.range(
+      from,
+      from + size - 1
+    );
     if (accountError) {
       console.error("Account query error:", accountError);
       return res.status(500).json({ error: accountError.message });
     }
 
-    // Для режима "any": фильтруем уже на JS-уровне
+    // === 5. Режим "any": фильтрация на JS-уровне ===
     let finalAccounts = accounts;
     if (filterMode === "any") {
       finalAccounts = accounts.filter((acc) => {
         const inHouse =
           !houseIds || houseIds.length === 0 || houseIds.includes(acc.house_id);
-        const debtRec = debtMap[acc.id];
-        const hasDebtMatch = debtRec != null; // т.к. мы уже отфильтровали debt по minDebt/minTerm
-        return inHouse || hasDebtMatch;
+        const hasDebt = debtMap[acc.id] != null;
+        return inHouse || hasDebt;
       });
     }
 
-    // Обогащаем аккаунты данными о долге
+    // === 6. Обогащение данными о долге ===
     const enriched = finalAccounts.map((acc) => ({
       ...acc,
       debt: debtMap[acc.id]?.amount || 0,
@@ -153,23 +162,20 @@ app.post("/debts/candidates", async (req, res) => {
       debt_stage: debtMap[acc.id]?.stage || null,
     }));
 
-    // Пагинация уже применена, но в режиме "any" количество может уменьшиться
     const total = filterMode === "all" ? count : enriched.length;
-
-    // rowIndex — глобальный номер в выдаче (только для отображения)
     const dataWithIndex = enriched.map((row, i) => ({
       ...row,
       rowIndex: from + i + 1,
     }));
 
     return res.json({
-      data: dataWithIndex,
+      dataWithIndex,
       total,
       page,
       pageSize: size,
     });
   } catch (err) {
-    console.error("Unexpected error in /search-accounts:", err);
+    console.error("Unexpected error in /debts/candidates:", err);
     return res.status(500).json({ error: "Internal server error" });
   }
 });
@@ -179,7 +185,7 @@ app.post("/debts/new", async (req, res) => {
 
   const size = Math.min(Math.max(parseInt(pageSize, 10) || 20, 1), 100);
   const from = page * size;
-  const to = from + size - 1;
+  // to не нужен, range(from, to) = from + size - 1
 
   try {
     // 1. Получаем долги со статусом 'new'
@@ -199,29 +205,44 @@ app.post("/debts/new", async (req, res) => {
       return d.account_id;
     });
 
-    // 2. Получаем аккаунты
-    let accountQuery = supabase.from("accounts").select("*");
-
-    if (Array.isArray(houseIds) && houseIds.length > 0) {
-      accountQuery = accountQuery.in("house_id", houseIds);
-    }
-
-    // ← Нет filterMode → просто фильтруем по наличию в debt
-    if (accountIdsFromDebt.length > 0) {
-      accountQuery = accountQuery.in("id", accountIdsFromDebt);
-    } else {
+    if (accountIdsFromDebt.length === 0) {
       return res.json({ data: [], total: 0, page, pageSize: size });
     }
 
-    accountQuery = accountQuery.range(from, to);
-    const { data: accounts, error: accountError, count } = await accountQuery;
+    // 2. Формируем базовый запрос к accounts с фильтрами
+    let baseQuery = supabase
+      .from("accounts")
+      .select("*")
+      .in("id", accountIdsFromDebt);
+    if (Array.isArray(houseIds) && houseIds.length > 0) {
+      baseQuery = baseQuery.in("house_id", houseIds);
+    }
 
+    // 3. Запрос для подсчёта total
+    const countQuery = supabase
+      .from("accounts")
+      .select("*", { count: "exact" })
+      .in("id", accountIdsFromDebt);
+    if (Array.isArray(houseIds) && houseIds.length > 0) {
+      countQuery.in("house_id", houseIds);
+    }
+    const { count, error: countError } = await countQuery;
+    if (countError) {
+      console.error("Count query error:", countError);
+      return res.status(500).json({ error: countError.message });
+    }
+
+    // 4. Запрос для данных страницы — С ТЕМИ ЖЕ ФИЛЬТРАМИ!
+    const { data: accounts, error: accountError } = await baseQuery.range(
+      from,
+      from + size - 1
+    );
     if (accountError) {
       console.error("Account query error:", accountError);
       return res.status(500).json({ error: accountError.message });
     }
 
-    // Обогащаем данными из debt
+    // 5. Обогащаем данными из debt
     const enriched = accounts.map((acc) => ({
       ...acc,
       debt: debtMap[acc.id]?.amount || 0,
@@ -237,7 +258,7 @@ app.post("/debts/new", async (req, res) => {
 
     return res.json({
       data: dataWithIndex,
-      total: count,
+      total: count, // теперь count — число, не null
       page,
       pageSize: size,
     });
