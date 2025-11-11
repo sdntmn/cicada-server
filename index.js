@@ -72,7 +72,7 @@ app.post("/debts/candidates", async (req, res) => {
   const from = page * size;
 
   try {
-    // === 1. Получаем долги со статусом 'candidates' с фильтрацией по сумме/сроку ===
+    // === 1. Получаем долги со статусом 'candidates' ===
     let debtQuery = supabase
       .from("debt")
       .select("account_id, amount, penalty, debt_term_months, stage")
@@ -89,7 +89,7 @@ app.post("/debts/candidates", async (req, res) => {
       debtQuery = debtQuery.gte("debt_term_months", minTerm);
     }
 
-    const { debts, error: debtError } = await debtQuery;
+    const { data: debts, error: debtError } = await debtQuery; // ✅ ИСПРАВЛЕНО
     if (debtError) {
       console.error("Debt query error:", debtError);
       return res.status(500).json({ error: debtError.message });
@@ -105,7 +105,7 @@ app.post("/debts/candidates", async (req, res) => {
       return res.json({ data: [], total: 0, page, pageSize: size });
     }
 
-    // === 2. Формируем базовый запрос к accounts с фильтрами ===
+    // === 2. Формируем базовый запрос к accounts ===
     let baseAccountQuery = supabase.from("accounts").select("*");
 
     if (Array.isArray(houseIds) && houseIds.length > 0) {
@@ -116,14 +116,16 @@ app.post("/debts/candidates", async (req, res) => {
       baseAccountQuery = baseAccountQuery.in("id", accountIdsFromDebt);
     }
 
-    // === 3. Запрос для общего количества (total) ===
-    const countQuery = supabase
+    // === 3. Запрос для общего количества ===
+    let countQuery = supabase
       .from("accounts")
-      .select("*", { count: "exact" })
-      .in("id", accountIdsFromDebt);
+      .select("*", { count: "exact", head: true }); // ✅ head: true для только count
 
+    if (filterMode === "all") {
+      countQuery = countQuery.in("id", accountIdsFromDebt);
+    }
     if (Array.isArray(houseIds) && houseIds.length > 0) {
-      countQuery.in("house_id", houseIds);
+      countQuery = countQuery.in("house_id", houseIds);
     }
 
     const { count, error: countError } = await countQuery;
@@ -133,19 +135,21 @@ app.post("/debts/candidates", async (req, res) => {
     }
 
     // === 4. Запрос для данных текущей страницы ===
-    const { accounts, error: accountError } = await baseAccountQuery.range(
-      from,
-      from + size - 1
-    );
+    const { data: accounts, error: accountError } =
+      await baseAccountQuery.range(
+        // ✅ ИСПРАВЛЕНО
+        from,
+        from + size - 1
+      );
     if (accountError) {
       console.error("Account query error:", accountError);
       return res.status(500).json({ error: accountError.message });
     }
 
     // === 5. Режим "any": фильтрация на JS-уровне ===
-    let finalAccounts = accounts;
+    let finalAccounts = accounts || [];
     if (filterMode === "any") {
-      finalAccounts = accounts.filter((acc) => {
+      finalAccounts = finalAccounts.filter((acc) => {
         const inHouse =
           !houseIds || houseIds.length === 0 || houseIds.includes(acc.house_id);
         const hasDebt = debtMap[acc.id] != null;
@@ -162,14 +166,14 @@ app.post("/debts/candidates", async (req, res) => {
       debt_stage: debtMap[acc.id]?.stage || null,
     }));
 
-    const total = filterMode === "all" ? count : enriched.length;
+    const total = filterMode === "all" ? count || 0 : enriched.length;
     const dataWithIndex = enriched.map((row, i) => ({
       ...row,
       rowIndex: from + i + 1,
     }));
 
     return res.json({
-      dataWithIndex,
+      data: dataWithIndex, // ✅ ИСПРАВЛЕНО: было dataWithIndex
       total,
       page,
       pageSize: size,
@@ -185,11 +189,10 @@ app.post("/debts/new", async (req, res) => {
 
   const size = Math.min(Math.max(parseInt(pageSize, 10) || 20, 1), 100);
   const from = page * size;
-  // to не нужен, range(from, to) = from + size - 1
 
   try {
     // 1. Получаем долги со статусом 'new'
-    const { data: debts, error: debtError } = await supabase
+    const { data: debts, error: debtError } = await supabase // ✅ ИСПРАВЛЕНО
       .from("debt")
       .select("account_id, amount, penalty, debt_term_months, stage")
       .eq("stage", "new");
@@ -200,7 +203,7 @@ app.post("/debts/new", async (req, res) => {
     }
 
     const debtMap = {};
-    const accountIdsFromDebt = debts.map((d) => {
+    const accountIdsFromDebt = (debts || []).map((d) => {
       debtMap[d.account_id] = d;
       return d.account_id;
     });
@@ -214,26 +217,30 @@ app.post("/debts/new", async (req, res) => {
       .from("accounts")
       .select("*")
       .in("id", accountIdsFromDebt);
+
     if (Array.isArray(houseIds) && houseIds.length > 0) {
       baseQuery = baseQuery.in("house_id", houseIds);
     }
 
     // 3. Запрос для подсчёта total
-    const countQuery = supabase
+    let countQuery = supabase
       .from("accounts")
-      .select("*", { count: "exact" })
+      .select("*", { count: "exact", head: true })
       .in("id", accountIdsFromDebt);
+
     if (Array.isArray(houseIds) && houseIds.length > 0) {
-      countQuery.in("house_id", houseIds);
+      countQuery = countQuery.in("house_id", houseIds);
     }
+
     const { count, error: countError } = await countQuery;
     if (countError) {
       console.error("Count query error:", countError);
       return res.status(500).json({ error: countError.message });
     }
 
-    // 4. Запрос для данных страницы — С ТЕМИ ЖЕ ФИЛЬТРАМИ!
+    // 4. Запрос для данных страницы
     const { data: accounts, error: accountError } = await baseQuery.range(
+      // ✅ ИСПРАВЛЕНО
       from,
       from + size - 1
     );
@@ -243,7 +250,7 @@ app.post("/debts/new", async (req, res) => {
     }
 
     // 5. Обогащаем данными из debt
-    const enriched = accounts.map((acc) => ({
+    const enriched = (accounts || []).map((acc) => ({
       ...acc,
       debt: debtMap[acc.id]?.amount || 0,
       penalty: debtMap[acc.id]?.penalty || 0,
@@ -258,7 +265,7 @@ app.post("/debts/new", async (req, res) => {
 
     return res.json({
       data: dataWithIndex,
-      total: count, // теперь count — число, не null
+      total: count || 0,
       page,
       pageSize: size,
     });
