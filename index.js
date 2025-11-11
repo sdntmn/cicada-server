@@ -174,70 +174,158 @@ app.post("/debts/candidates", async (req, res) => {
   }
 });
 
-// POST /debts/batch-to-new
+app.post("/debts/new", async (req, res) => {
+  const { houseIds, page = 0, pageSize = 20 } = req.body;
+
+  const size = Math.min(Math.max(parseInt(pageSize, 10) || 20, 1), 100);
+  const from = page * size;
+  const to = from + size - 1;
+
+  try {
+    // 1. Получаем долги со статусом 'new'
+    const { data: debts, error: debtError } = await supabase
+      .from("debt")
+      .select("account_id, amount, penalty, debt_term_months, stage")
+      .eq("stage", "new");
+
+    if (debtError) {
+      console.error("Debt query error:", debtError);
+      return res.status(500).json({ error: debtError.message });
+    }
+
+    const debtMap = {};
+    const accountIdsFromDebt = debts.map((d) => {
+      debtMap[d.account_id] = d;
+      return d.account_id;
+    });
+
+    // 2. Получаем аккаунты
+    let accountQuery = supabase.from("accounts").select("*");
+
+    if (Array.isArray(houseIds) && houseIds.length > 0) {
+      accountQuery = accountQuery.in("house_id", houseIds);
+    }
+
+    // ← Нет filterMode → просто фильтруем по наличию в debt
+    if (accountIdsFromDebt.length > 0) {
+      accountQuery = accountQuery.in("id", accountIdsFromDebt);
+    } else {
+      return res.json({ data: [], total: 0, page, pageSize: size });
+    }
+
+    accountQuery = accountQuery.range(from, to);
+    const { data: accounts, error: accountError, count } = await accountQuery;
+
+    if (accountError) {
+      console.error("Account query error:", accountError);
+      return res.status(500).json({ error: accountError.message });
+    }
+
+    // Обогащаем данными из debt
+    const enriched = accounts.map((acc) => ({
+      ...acc,
+      debt: debtMap[acc.id]?.amount || 0,
+      penalty: debtMap[acc.id]?.penalty || 0,
+      debt_term_months: debtMap[acc.id]?.debt_term_months || null,
+      debt_stage: debtMap[acc.id]?.stage || null,
+    }));
+
+    const dataWithIndex = enriched.map((row, i) => ({
+      ...row,
+      rowIndex: from + i + 1,
+    }));
+
+    return res.json({
+      data: dataWithIndex,
+      total: count,
+      page,
+      pageSize: size,
+    });
+  } catch (err) {
+    console.error("Unexpected error in /debts/new:", err);
+    return res.status(500).json({ error: "Internal server error" });
+  }
+});
+
 app.post("/debts/batch-to-new", async (req, res) => {
   const { accountIds } = req.body;
 
   if (!Array.isArray(accountIds) || accountIds.length === 0) {
     return res
       .status(400)
-      .json({ error: "accountIds must be a non-empty array" });
+      .json({ success: false, error: "accountIds must be a non-empty array" });
   }
 
   try {
-    const { error } = await supabase
+    // Обновляем ТОЛЬКО тех, кто находится в статусе 'candidates'
+    const { data, error } = await supabase
       .from("debt")
       .update({ stage: "new", updated_at: new Date().toISOString() })
       .in("account_id", accountIds)
-      .eq("stage", "candidates"); // обновляем ТОЛЬКО кандидатов
+      .eq("stage", "candidates")
+      .select("account_id");
 
     if (error) {
-      console.error("Failed to update debts to 'new':", error);
-      return res.status(500).json({ error: error.message });
+      console.error("Update to 'new' failed:", error);
+      return res.status(500).json({ success: false, error: error.message });
     }
+
+    const movedCount = data.length;
+    const movedIds = data.map((row) => row.account_id);
+    const unchangedCount = accountIds.length - movedCount;
 
     res.json({
       success: true,
-      message: `${accountIds.length} records moved to 'new' stage`,
+      to_stage: "new",
+      moved_count: movedCount,
+      unchanged_count: unchangedCount,
+      moved_ids: movedIds,
     });
   } catch (err) {
     console.error("Unexpected error in /debts/batch-to-new:", err);
-    res.status(500).json({ error: "Internal server error" });
+    res.status(500).json({ success: false, error: "Internal server error" });
   }
 });
 
-// POST /debts/batch-to-candidates
 app.post("/debts/batch-to-candidates", async (req, res) => {
   const { accountIds } = req.body;
 
   if (!Array.isArray(accountIds) || accountIds.length === 0) {
     return res
       .status(400)
-      .json({ error: "accountIds must be a non-empty array" });
+      .json({ success: false, error: "accountIds must be a non-empty array" });
   }
 
   try {
-    const { error } = await supabase
+    // Обновляем ТОЛЬКО тех, кто находится в статусе 'new'
+    const { data, error } = await supabase
       .from("debt")
       .update({ stage: "candidates", updated_at: new Date().toISOString() })
       .in("account_id", accountIds)
-      .eq("stage", "new"); // возвращаем ТОЛЬКО те, что сейчас в 'new'
+      .eq("stage", "new")
+      .select("account_id");
 
     if (error) {
-      console.error("Failed to revert debts to 'candidates':", error);
-      return res.status(500).json({ error: error.message });
+      console.error("Update to 'candidates' failed:", error);
+      return res.status(500).json({ success: false, error: error.message });
     }
+
+    const movedCount = data.length;
+    const movedIds = data.map((row) => row.account_id);
+    const unchangedCount = accountIds.length - movedCount;
 
     res.json({
       success: true,
-      message: `${accountIds.length} records reverted to 'candidates'`,
+      to_stage: "candidates",
+      moved_count: movedCount,
+      unchanged_count: unchangedCount,
+      moved_ids: movedIds,
     });
   } catch (err) {
     console.error("Unexpected error in /debts/batch-to-candidates:", err);
-    res.status(500).json({ error: "Internal server error" });
+    res.status(500).json({ success: false, error: "Internal server error" });
   }
 });
-
 // Аналогично для users, houses и т.д.
 app.get("/users", async (req, res) => {
   const { data, error } = await supabase.from("users").select("*");
